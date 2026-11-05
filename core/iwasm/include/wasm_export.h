@@ -16,6 +16,8 @@
 #include <stdbool.h>
 #include "lib_export.h"
 
+#include "wasm_synchronization.h"
+
 #ifndef WASM_RUNTIME_API_EXTERN
 #if defined(_MSC_BUILD)
 #if defined(COMPILING_WASM_RUNTIME_API)
@@ -2515,6 +2517,17 @@ wasm_runtime_shared_heap_malloc(wasm_module_inst_t module_inst, uint64_t size,
  */
 WASM_RUNTIME_API_EXTERN void
 wasm_runtime_shared_heap_free(wasm_module_inst_t module_inst, uint64_t ptr);
+
+
+WASM_RUNTIME_API_EXTERN bool
+wasm_runtime_set_synchronization_callback(
+    wasm_exec_env_t exec_env,
+    wasm_synchronization_callback_t callback,
+    void *worker_data
+);
+
+WASM_RUNTIME_API_EXTERN void
+wasm_runtime_clear_synchronization_callback(wasm_exec_env_t exec_env);
 
 #ifdef __cplusplus
 }

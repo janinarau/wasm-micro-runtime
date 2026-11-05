@@ -12,6 +12,8 @@
 #include "../interpreter/wasm.h"
 #endif
 
+#include "wasm_synchronization.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -164,6 +166,10 @@ typedef struct WASMExecEnv {
 
     /* The WASM stack size */
     uint32 wasm_stack_size;
+
+    /* data needed for synchronization of lockstep threads */
+    wasm_synchronization_callback_t synchronization_callback;
+    void *synchronization_user_data;
 
     /* The WASM stack of current thread */
     union {

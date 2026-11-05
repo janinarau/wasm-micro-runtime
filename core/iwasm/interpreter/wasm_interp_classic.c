@@ -28,6 +28,14 @@
 #include "../fast-jit/jit_compiler.h"
 #endif
 
+#include "wasm_synchronization.h"
+
+uint8_t *instruction_start = NULL;
+static uint8_t opcode_local = 0;
+uint64_t instruction_count = 0;
+uint16_t param_cell_num_temp = 0;
+uint16_t local_cell_num_temp = 0;
+
 typedef int32 CellType_I32;
 typedef int64 CellType_I64;
 typedef float32 CellType_F32;
@@ -773,6 +781,9 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
         frame_lp = frame->lp;           \
         frame_sp = frame->sp;           \
         frame_csp = frame->csp;         \
+        instruction_start = frame_ip; \
+        param_cell_num_temp = cur_func->param_cell_num; \
+        local_cell_num_temp = cur_func->local_cell_num; \
         RECOVER_FRAME_REF();            \
     } while (0)
 
@@ -1470,10 +1481,44 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
 #endif
 #endif
 
+wasm_synchronization_result_t
+wasm_interp_synchronization_signal_callback(wasm_exec_env_t exec_env){
+    if (!exec_env || !exec_env->synchronization_callback){
+        return WASM_SYNCHRONIZATION_ABORT;
+    }
+    instruction_count++;
+    wasm_synchronization_info_t info;
+    info.instruction_count = instruction_count;
+    info.opcode = opcode_local;
+    info.instruction_start = instruction_start;
+    info.param_cell = param_cell_num_temp;
+    info.local_cell = local_cell_num_temp;
+
+
+    if (wasm_synchronization_extract_information(exec_env, exec_env->cur_frame, WASM_SYNCHRONIZATION_INSTRUCTION, &info)){      
+        return exec_env->synchronization_callback(exec_env, info, exec_env->synchronization_user_data);
+    }
+
+    return WASM_SYNCHRONIZATION_ABORT;
+    
+}
+
+
 #if WASM_ENABLE_LABELS_AS_VALUES != 0
 
 #define HANDLE_OP(opcode) HANDLE_##opcode:
-#define FETCH_OPCODE_AND_DISPATCH() goto *handle_table[*frame_ip++]
+#define FETCH_OPCODE_AND_DISPATCH() \    
+    instruction_start = frame_ip; \
+    opcode_local = *frame_ip++; \
+    goto *handle_table[opcode_local] 
+    
+
+#define CHECK_SYNCHRONIZATION_INSTRUCTION() \
+    SYNC_ALL_TO_FRAME(); \
+    if (wasm_interp_synchronization_signal_callback(exec_env) == WASM_SYNCHRONIZATION_ABORT){ \
+        goto got_exception; \
+    }
+
 
 #if WASM_ENABLE_THREAD_MGR != 0 && WASM_ENABLE_DEBUG_INTERP != 0
 #define HANDLE_OP_END()                                                       \
@@ -1495,11 +1540,13 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
             os_mutex_unlock(&exec_env->wait_lock);                            \
         }                                                                     \
         CHECK_INSTRUCTION_LIMIT();                                            \
+        CHECK_SYNCHRONIZATION_INSTRUCTION(); \
         goto *handle_table[*frame_ip++];                                      \
     } while (0)
 #else
 #define HANDLE_OP_END()        \
     CHECK_INSTRUCTION_LIMIT(); \
+    CHECK_SYNCHRONIZATION_INSTRUCTION(); \
     FETCH_OPCODE_AND_DISPATCH()
 #endif
 
@@ -1524,10 +1571,12 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
         os_mutex_unlock(&exec_env->wait_lock);                            \
     }                                                                     \
     CHECK_INSTRUCTION_LIMIT();                                            \
+    CHECK_SYNCHRONIZATION_INSTRUCTION(); \
     continue;
 #else
 #define HANDLE_OP_END()        \
     CHECK_INSTRUCTION_LIMIT(); \
+    CHECK_SYNCHRONIZATION_INSTRUCTION(); \
     continue;
 #endif
 
@@ -6814,6 +6863,11 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
             frame_ip = wasm_get_func_code(cur_func);
             frame_ip_end = wasm_get_func_code_end(cur_func);
             frame_lp = frame->lp;
+
+            instruction_start = frame_ip;
+            param_cell_num_temp = cur_func->param_cell_num;
+            local_cell_num_temp = cur_func->local_cell_num;
+            
 
             frame_sp = frame->sp_bottom =
                 frame_lp + cur_func->param_cell_num + cur_func->local_cell_num;

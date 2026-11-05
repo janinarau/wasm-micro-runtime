@@ -1439,6 +1439,16 @@ wasm_runtime_check_and_update_last_used_shared_heap(
 struct WASMModuleInstanceExtraCommon *
 GetModuleInstanceExtraCommon(struct WASMModuleInstance *module_inst);
 
+WASM_RUNTIME_API_EXTERN bool 
+wasm_runtime_set_synchronization_callback(
+    wasm_exec_env_t exec_env,
+    wasm_synchronization_callback_t callback,
+    void *worker_data
+);
+
+WASM_RUNTIME_API_EXTERN void
+wasm_runtime_clear_synchronization_callback(WASMExecEnv *exec_env);
+
 #ifdef __cplusplus
 }
 #endif

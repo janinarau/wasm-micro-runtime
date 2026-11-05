@@ -10,6 +10,7 @@ cwd     = GetCurrentDir()
 
 src = Split('''
 wasm_runtime.c
+wasm_synchronization.c
 ''')
 
 if GetDepend(['WAMR_BUILD_FAST_INTERP']):

@@ -8174,3 +8174,24 @@ GetModuleInstanceExtraCommon(WASMModuleInstance *module_inst)
     return &module_inst->e->common;
 #endif
 }
+
+bool 
+wasm_runtime_set_synchronization_callback(wasm_exec_env_t exec_env, wasm_synchronization_callback_t callback, void *worker_data){
+    
+    if(!exec_env || !callback || !worker_data){
+        return false;
+    }
+
+    exec_env->synchronization_callback = callback;
+    exec_env->synchronization_user_data = worker_data;
+    return true;
+}
+
+void 
+wasm_runtime_clear_synchronization_callback(wasm_exec_env_t exec_env){
+    if (!exec_env)
+        return;
+    
+    exec_env->synchronization_callback = NULL;
+    exec_env->synchronization_user_data = NULL;
+}
