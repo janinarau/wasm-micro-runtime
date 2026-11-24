@@ -21,6 +21,11 @@ extern "C" {
 struct WASMModuleInstanceCommon;
 struct WASMInterpFrame;
 
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+//#include "wasm_runtime.h"
+typedef struct WASMFunctionInstance WASMFunctionInstance;
+#endif
+
 #if WASM_ENABLE_THREAD_MGR != 0
 typedef struct WASMCluster WASMCluster;
 #if WASM_ENABLE_DEBUG_INTERP != 0
@@ -167,9 +172,23 @@ typedef struct WASMExecEnv {
     /* The WASM stack size */
     uint32 wasm_stack_size;
 
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
     /* data needed for synchronization of lockstep threads */
     wasm_synchronization_callback_t synchronization_callback;
     void *synchronization_user_data;
+    uint64_t instruction_count;
+    uint8_t opcode_local;
+    uint8_t *instruction_start;
+    wasm_synchronization_event_t last_instruction;
+    WASMFunctionInstance *module_functions;
+    uint8_t *memory_start;
+    uint64_t memory_size;
+    bool execute_native;
+    uint16_t ret_num_native;
+    uint32_t argv_ret_native[2];
+
+#endif
+
 
     /* The WASM stack of current thread */
     union {

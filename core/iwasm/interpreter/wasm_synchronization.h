@@ -25,7 +25,14 @@ typedef enum wasm_synchronization_event{
     WASM_SYNCHRONIZATION_INSTRUCTION = 1,
     WASM_SYNCHRONIZATION_BEFORE_NATIVE = 2,
     WASM_SYNCHRONIZATION_AFTER_NATIVE = 3,
-    WASM_SYNCHRONIZATION_SPECIAL = 4
+    WASM_SYNCHRONIZATION_SPECIAL = 4,
+    WASM_SYNCHRONIZATION_FUNC_RETURN = 5,
+    WASM_SYNCHRONIZATION_FUNC_CALL = 6,
+    WASM_SYNCHRONIZATION_STACK_OPERATION = 7,
+    WASM_SYNCHRONIZATION_CONTROL_START = 8,
+    WASM_SYNCHRONIZATION_CONTROL_END = 9,
+    WASM_SYNCHRONIZATION_MEMORY_LOAD = 10,
+    WASM_SYNCHRONIZATION_MEMORY_STORE = 11
 } wasm_synchronization_event_t;
 
 typedef enum wasm_synchronization_result {
@@ -33,6 +40,7 @@ typedef enum wasm_synchronization_result {
     WASM_SYNCHRONIZATION_ABORT = 1
 } wasm_synchronization_result_t;
 
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 && WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION == 0
 typedef struct wasm_synchronization_info{
     wasm_synchronization_event_t event;
     uint64_t instruction_count; 
@@ -52,9 +60,35 @@ typedef struct wasm_synchronization_info{
     uint16_t param_cell;
     uint16_t local_cell;
 } wasm_synchronization_info_t;
+#endif
+
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+typedef struct wasm_synchronization_info{
+    wasm_synchronization_event_t event;
+    uint64_t instruction_count;
+    uint8_t opcode;
+    uint32_t function_index;
+    int32_t bytecode_offset;
+    uint32_t *sp;
+    uint32_t **frame_sp_exec_env;
+    uint32_t *frame_sp_bottom;
+    uint32_t stack_depth;
+    uint32_t *lp;
+    uint32_t locals_depth;
+    uint32_t control_depth;
+    uint8_t *begin_addr;
+    uint8_t *target_addr;
+    uint8_t *instruction_start;
+    uint8_t *function_start;
+    uint8_t *memory_start;
+    uint64_t memory_size;
+    uint16_t ret_num_native;
+    uint32_t argv_ret_native[2];
+} wasm_synchronization_info_t;
+#endif
 
 typedef wasm_synchronization_result_t (*wasm_synchronization_callback_t)(
-    wasm_exec_env_t exec_env, 
+    bool * execute_native,
     wasm_synchronization_info_t info, 
     void *worker_data);
 

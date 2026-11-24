@@ -1,8 +1,8 @@
 #include "wasm_synchronization.h"
-
-//for analyzing only, remove for lockstep implementation later
-#include "wasm_exec_env.h" 
 #include "wasm_runtime.h"
+
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 && WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION == 0
+#include "wasm_exec_env.h" 
 
 
 bool
@@ -47,3 +47,52 @@ wasm_synchronization_extract_information(wasm_exec_env_t exec_env,
 
     return true;
 }
+#endif
+
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+bool
+wasm_synchronization_extract_information(wasm_exec_env_t exec_env, 
+    WASMInterpFrame *frame,
+    wasm_synchronization_event_t event, 
+    wasm_synchronization_info_t *info)
+{
+    info->event = event;
+
+    if (frame != NULL){
+        
+        info->event = event;
+
+        info->locals_depth = (uint32_t)(frame->sp - frame->lp);
+        info->control_depth = (uint32_t)(frame->csp - frame->csp_bottom);
+        info->stack_depth = (uint32_t)(frame->sp -frame->sp_bottom);
+        info->frame_sp_bottom = frame->sp_bottom;
+
+        info->sp = frame->sp;
+        info->lp = frame->lp;
+
+        if (event == WASM_SYNCHRONIZATION_AFTER_NATIVE){
+            info->ret_num_native = exec_env->ret_num_native;
+            info->argv_ret_native[0] = exec_env->argv_ret_native[0];
+            info->argv_ret_native[1] = exec_env->argv_ret_native[1];
+            info->frame_sp_exec_env = &frame->sp; 
+        }
+
+        /* frame->csp points to next free entry, control stack is never empty */
+        info->begin_addr = (frame->csp-1)->begin_addr;
+        info->target_addr = (frame->csp-1)->target_addr;
+
+        if (frame->function != NULL) {
+
+            info->function_start = (uint8_t*) wasm_get_func_code(frame->function);
+            
+            info->bytecode_offset = (int32_t) (info->instruction_start - info->function_start); 
+
+        }
+    } else {
+        return false;
+    }
+    
+
+    return true;
+}
+#endif

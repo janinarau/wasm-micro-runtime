@@ -736,4 +736,14 @@ unless used elsewhere */
 #define WASM_ENABLE_EXTENDED_CONST_EXPR 0
 #endif
 
+
+/* Lockstep synchronization */
+#ifndef WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION
+#define WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION 0
+#endif
+
+#ifndef WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS
+#define WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS 0
+#endif
+
 #endif /* end of _CONFIG_H_ */

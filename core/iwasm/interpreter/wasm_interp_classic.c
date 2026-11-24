@@ -27,14 +27,19 @@
 #if WASM_ENABLE_FAST_JIT != 0
 #include "../fast-jit/jit_compiler.h"
 #endif
-
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 || WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0 
 #include "wasm_synchronization.h"
+#endif
 
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 && WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION == 0
 uint8_t *instruction_start = NULL;
 static uint8_t opcode_local = 0;
 uint64_t instruction_count = 0;
 uint16_t param_cell_num_temp = 0;
 uint16_t local_cell_num_temp = 0;
+WASMFunctionInstance *module_functions = NULL;
+#endif
+
 
 typedef int32 CellType_I32;
 typedef int64 CellType_I64;
@@ -549,6 +554,19 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
 
 #define PUSH_PAGE_COUNT(value) PUSH_MEM_OFFSET(value)
 
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+#define PUSH_CSP(_label_type, param_cell_num, cell_num, _target_addr) \
+    do {                                                              \
+        bh_assert(frame_csp < frame->csp_boundary);                   \
+        SET_LABEL_TYPE(_label_type);                                  \
+        frame_csp->cell_num = cell_num;                               \
+        frame_csp->begin_addr = frame_ip;                             \
+        frame_csp->target_addr = _target_addr;                        \
+        frame_csp->frame_sp = frame_sp - param_cell_num;              \
+        frame_csp++;                                                  \
+        exec_env->last_instruction = WASM_SYNCHRONIZATION_CONTROL_START; \
+    } while (0)
+#else
 #define PUSH_CSP(_label_type, param_cell_num, cell_num, _target_addr) \
     do {                                                              \
         bh_assert(frame_csp < frame->csp_boundary);                   \
@@ -559,6 +577,7 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
         frame_csp->frame_sp = frame_sp - param_cell_num;              \
         frame_csp++;                                                  \
     } while (0)
+#endif
 
 #define POP_I32() (--frame_sp, *(int32 *)frame_sp)
 
@@ -593,12 +612,44 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
         bh_assert(frame_csp - n >= frame->csp_bottom); \
     } while (0)
 
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+#define POP_CSP()                  \
+    do {                           \
+        POP_CSP_CHECK_OVERFLOW(1); \
+        --frame_csp;               \
+        exec_env->last_instruction = WASM_SYNCHRONIZATION_CONTROL_END; \
+    } while (0)
+#else
 #define POP_CSP()                  \
     do {                           \
         POP_CSP_CHECK_OVERFLOW(1); \
         --frame_csp;               \
     } while (0)
+#endif
 
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0 
+#define POP_CSP_N(n)                                                   \
+    do {                                                               \
+        uint32 *frame_sp_old = frame_sp;                               \
+        uint32 cell_num_to_copy;                                       \
+        POP_CSP_CHECK_OVERFLOW(n + 1);                                 \
+        frame_csp -= n;                                                \
+        frame_ip = (frame_csp - 1)->target_addr;                       \
+        /* copy arity values of block */                               \
+        frame_sp = (frame_csp - 1)->frame_sp;                          \
+        cell_num_to_copy = (frame_csp - 1)->cell_num;                  \
+        if (cell_num_to_copy > 0) {                                    \
+            word_copy(frame_sp, frame_sp_old - cell_num_to_copy,       \
+                      cell_num_to_copy);                               \
+            frame_ref_copy(FRAME_REF(frame_sp),                        \
+                           FRAME_REF(frame_sp_old - cell_num_to_copy), \
+                           cell_num_to_copy);                          \
+        }                                                              \
+        frame_sp += cell_num_to_copy;                                  \
+        CLEAR_FRAME_REF(frame_sp, frame_sp_old - frame_sp);            \
+        exec_env->last_instruction = WASM_SYNCHRONIZATION_CONTROL_END; \
+    } while (0)
+#else
 #define POP_CSP_N(n)                                                   \
     do {                                                               \
         uint32 *frame_sp_old = frame_sp;                               \
@@ -619,6 +670,8 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
         frame_sp += cell_num_to_copy;                                  \
         CLEAR_FRAME_REF(frame_sp, frame_sp_old - frame_sp);            \
     } while (0)
+#endif
+
 
 /* Pop the given number of elements from the given frame's stack.  */
 #define POP(N)                        \
@@ -771,6 +824,7 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
 #define RECOVER_FRAME_REF() (void)0
 #endif
 
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 && WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION == 0
 #define RECOVER_CONTEXT(new_frame)      \
     do {                                \
         frame = (new_frame);            \
@@ -786,6 +840,21 @@ wasm_interp_get_frame_ref(WASMInterpFrame *frame)
         local_cell_num_temp = cur_func->local_cell_num; \
         RECOVER_FRAME_REF();            \
     } while (0)
+#else 
+#define RECOVER_CONTEXT(new_frame)      \
+    do {                                \
+        frame = (new_frame);            \
+        cur_func = frame->function;     \
+        prev_frame = frame->prev_frame; \
+        frame_ip = frame->ip;           \
+        RECOVER_FRAME_IP_END();         \
+        frame_lp = frame->lp;           \
+        frame_sp = frame->sp;           \
+        frame_csp = frame->csp;         \
+        RECOVER_FRAME_REF();            \
+    } while (0)
+#endif
+
 
 #if WASM_ENABLE_LABELS_AS_VALUES != 0
 #define GET_OPCODE() opcode = *(frame_ip - 1);
@@ -1315,15 +1384,28 @@ wasm_interp_call_func_native(WASMModuleInstance *module_inst,
     }
 #endif
 
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+    exec_env->ret_num_native = cur_func->ret_cell_num;
+#endif
+
     if (cur_func->ret_cell_num == 1) {
         prev_frame->sp[0] = argv_ret[0];
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+        exec_env->argv_ret_native[0] = argv_ret[0];
+#endif
         prev_frame->sp++;
     }
     else if (cur_func->ret_cell_num == 2) {
         prev_frame->sp[0] = argv_ret[0];
         prev_frame->sp[1] = argv_ret[1];
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+        exec_env->argv_ret_native[0] = argv_ret[0];
+        exec_env->argv_ret_native[1] = argv_ret[1];
+#endif
         prev_frame->sp += 2;
     }
+
+
 
     FREE_FRAME(exec_env, frame);
     wasm_exec_env_set_cur_frame(exec_env, prev_frame);
@@ -1481,6 +1563,7 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
 #endif
 #endif
 
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 && WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION == 0
 wasm_synchronization_result_t
 wasm_interp_synchronization_signal_callback(wasm_exec_env_t exec_env){
     if (!exec_env || !exec_env->synchronization_callback){
@@ -1502,23 +1585,68 @@ wasm_interp_synchronization_signal_callback(wasm_exec_env_t exec_env){
     return WASM_SYNCHRONIZATION_ABORT;
     
 }
+#endif
+
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+wasm_synchronization_result_t
+wasm_interp_synchronization_signal_callback(wasm_exec_env_t exec_env){
+    if (!exec_env || !exec_env->synchronization_callback){
+        return WASM_SYNCHRONIZATION_ABORT;
+    }
+    wasm_synchronization_info_t info;
+    info.instruction_count = exec_env->instruction_count;
+    info.opcode = exec_env->opcode_local;
+    info.instruction_start = exec_env->instruction_start;
+    info.function_index = (uint32_t) (exec_env->cur_frame->function - exec_env->module_functions);
+    info.memory_start = exec_env->memory_start;
+    info.memory_size = exec_env->memory_size;
+
+
+    if (wasm_synchronization_extract_information(exec_env, exec_env->cur_frame, exec_env->last_instruction, &info)){      
+        /* handle special case for first instruction, pointer starts at WASM_OP_IMPDEP, different for every thread */
+        if(info.opcode == WASM_OP_IMPDEP){
+            info.instruction_start = info.function_start;
+            info.bytecode_offset = 0;
+        }
+        return exec_env->synchronization_callback(&exec_env->execute_native, info, exec_env->synchronization_user_data);
+    }
+
+    return WASM_SYNCHRONIZATION_ABORT;
+    
+}
+#endif
 
 
 #if WASM_ENABLE_LABELS_AS_VALUES != 0
 
 #define HANDLE_OP(opcode) HANDLE_##opcode:
-#define FETCH_OPCODE_AND_DISPATCH() \    
-    instruction_start = frame_ip; \
-    opcode_local = *frame_ip++; \
-    goto *handle_table[opcode_local] 
-    
 
+//TODO: restore old implementation
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0 || WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0
+#define FETCH_OPCODE_AND_DISPATCH() \
+    exec_env->instruction_start = frame_ip; \
+    exec_env->opcode_local = *frame_ip++; \
+    exec_env->instruction_count++; \
+    goto *handle_table[exec_env->opcode_local] 
+#else
+#define FETCH_OPCODE_AND_DISPATCH() \
+    goto *handle_table[*frame_ip++] 
+#endif    
+
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0 || WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0
 #define CHECK_SYNCHRONIZATION_INSTRUCTION() \
     SYNC_ALL_TO_FRAME(); \
+    if (exec_env->last_instruction == WASM_SYNCHRONIZATION_NONE){ \
+        exec_env->last_instruction = WASM_SYNCHRONIZATION_STACK_OPERATION; \
+    } \
     if (wasm_interp_synchronization_signal_callback(exec_env) == WASM_SYNCHRONIZATION_ABORT){ \
+        wasm_set_exception(module, "synchronization mismatch"); \
         goto got_exception; \
-    }
-
+    } \
+    exec_env->last_instruction = WASM_SYNCHRONIZATION_NONE; 
+#else
+#define CHECK_SYNCHRONIZATION_INSTRUCTION()
+#endif
 
 #if WASM_ENABLE_THREAD_MGR != 0 && WASM_ENABLE_DEBUG_INTERP != 0
 #define HANDLE_OP_END()                                                       \
@@ -1650,6 +1778,16 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
     uint32 local_idx, local_offset, global_idx;
     uint8 local_type, *global_addr;
     uint32 cache_index, type_index, param_cell_num, cell_num;
+
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 || WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+    exec_env->module_functions = module->e->functions;
+    exec_env->instruction_start = frame_ip;
+    exec_env->memory_start = memory->memory_data;
+    
+    /* memory->memory_data_size is the allocated byte size, which WAMR rounds to the platform page size */
+    exec_env->memory_size = (uint64_t) memory->num_bytes_per_page * memory->cur_page_count; 
+#endif
+
 
 #if WASM_ENABLE_INSTRUCTION_METERING != 0
     int instructions_left = -1;
@@ -4475,6 +4613,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(4);
                 PUSH_I32(LOAD_I32(maddr));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4490,6 +4631,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(8);
                 PUSH_I64(LOAD_I64(maddr));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4504,6 +4648,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(1);
                 PUSH_I32(sign_ext_8_32(*(int8 *)maddr));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4518,6 +4665,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(1);
                 PUSH_I32((uint32)(*(uint8 *)maddr));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4532,6 +4682,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(2);
                 PUSH_I32(sign_ext_16_32(LOAD_I16(maddr)));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4546,6 +4699,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(2);
                 PUSH_I32((uint32)(LOAD_U16(maddr)));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4560,6 +4716,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(1);
                 PUSH_I64(sign_ext_8_64(*(int8 *)maddr));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4574,6 +4733,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(1);
                 PUSH_I64((uint64)(*(uint8 *)maddr));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4588,6 +4750,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(2);
                 PUSH_I64(sign_ext_16_64(LOAD_I16(maddr)));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4602,6 +4767,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(2);
                 PUSH_I64((uint64)(LOAD_U16(maddr)));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4616,6 +4784,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(4);
                 PUSH_I64(sign_ext_32_64(LOAD_I32(maddr)));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4630,6 +4801,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 CHECK_MEMORY_OVERFLOW(4);
                 PUSH_I64((uint64)(LOAD_U32(maddr)));
                 CHECK_READ_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_LOAD;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4655,6 +4829,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                     STORE_U32(maddr, frame_sp[1]);
                 }
                 CHECK_WRITE_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_STORE;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4682,6 +4859,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                                     GET_I64_FROM_ADDR(frame_sp + 1));
                 }
                 CHECK_WRITE_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_STORE;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4707,6 +4887,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                     STORE_U16(maddr, (uint16)sval);
                 }
                 CHECK_WRITE_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_STORE;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4737,6 +4920,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                     STORE_U32(maddr, (uint32)sval);
                 }
                 CHECK_WRITE_WATCHPOINT(addr, offset);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_MEMORY_STORE;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -4778,7 +4964,10 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                     linear_mem_size = GET_LINEAR_MEMORY_SIZE(memory);
 #endif
                 }
-
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->memory_start = memory->memory_data;
+                exec_env->memory_size = (uint64_t) memory->num_bytes_per_page * memory->cur_page_count;
+#endif
                 HANDLE_OP_END();
             }
 
@@ -6762,22 +6951,36 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
             else
 #endif /* end of WASM_ENABLE_MULTI_MODULE != 0 */
             {
-                wasm_interp_call_func_native(module, exec_env, cur_func,
-                                             prev_frame);
-#if WASM_ENABLE_TAIL_CALL != 0 || WASM_ENABLE_GC != 0
-                if (is_return_call) {
-                    /* the frame was freed before tail calling and
-                       the prev_frame was set as exec_env's cur_frame,
-                       so here we recover context from prev_frame */
-                    RECOVER_CONTEXT(prev_frame);
-                }
-                else
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                exec_env->last_instruction = WASM_SYNCHRONIZATION_BEFORE_NATIVE;
+                CHECK_SYNCHRONIZATION_INSTRUCTION();
+                if (exec_env->execute_native){
 #endif
-                {
-                    prev_frame = frame->prev_frame;
-                    cur_func = frame->function;
-                    UPDATE_ALL_FROM_FRAME();
+                    wasm_interp_call_func_native(module, exec_env, cur_func,
+                                             prev_frame);
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0  
                 }
+#endif                                         
+#if WASM_ENABLE_TAIL_CALL != 0 || WASM_ENABLE_GC != 0
+                    if (is_return_call) {
+                        /* the frame was freed before tail calling and
+                        the prev_frame was set as exec_env's cur_frame,
+                        so here we recover context from prev_frame */
+                        RECOVER_CONTEXT(prev_frame);
+                    }
+                    else
+#endif
+                    {
+                        prev_frame = frame->prev_frame;
+                        cur_func = frame->function;
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+                        UPDATE_ALL_FROM_FRAME();
+                        exec_env->last_instruction = WASM_SYNCHRONIZATION_AFTER_NATIVE;
+                        CHECK_SYNCHRONIZATION_INSTRUCTION();
+#endif
+                        UPDATE_ALL_FROM_FRAME();
+                    }
+
             }
 
             /* update memory size, no need to update memory ptr as
@@ -6787,6 +6990,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
     || WASM_ENABLE_BULK_MEMORY != 0
             if (memory)
                 linear_mem_size = GET_LINEAR_MEMORY_SIZE(memory);
+#endif
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+    exec_env->memory_size = (uint64_t) memory->num_bytes_per_page * memory->cur_page_count; 
 #endif
             if (wasm_copy_exception(module, NULL)) {
 #if WASM_ENABLE_EXCE_HANDLING != 0
@@ -6864,10 +7070,12 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
             frame_ip_end = wasm_get_func_code_end(cur_func);
             frame_lp = frame->lp;
 
+
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0
             instruction_start = frame_ip;
             param_cell_num_temp = cur_func->param_cell_num;
             local_cell_num_temp = cur_func->local_cell_num;
-            
+#endif           
 
             frame_sp = frame->sp_bottom =
                 frame_lp + cur_func->param_cell_num + cur_func->local_cell_num;
@@ -6914,6 +7122,11 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
 #if WASM_ENABLE_THREAD_MGR != 0
         CHECK_SUSPEND_FLAGS();
 #endif
+
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+        exec_env->last_instruction = WASM_SYNCHRONIZATION_FUNC_CALL;
+#endif
+
         HANDLE_OP_END();
     }
 
@@ -6934,6 +7147,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
             exception_tag_index = POP_I32();
             goto find_a_catch_handler;
         }
+#endif
+#if WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
+        exec_env->last_instruction = WASM_SYNCHRONIZATION_FUNC_RETURN;
 #endif
         HANDLE_OP_END();
     }
