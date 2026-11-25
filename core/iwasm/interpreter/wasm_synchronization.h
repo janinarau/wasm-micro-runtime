@@ -84,6 +84,10 @@ typedef struct wasm_synchronization_info{
     uint64_t memory_size;
     uint16_t ret_num_native;
     uint32_t argv_ret_native[2];
+    uint8_t *globals_start;
+    uint32_t globals_size;
+    uint8_t *table_start;
+    size_t table_bytes;
 } wasm_synchronization_info_t;
 #endif
 

@@ -8175,6 +8175,7 @@ GetModuleInstanceExtraCommon(WASMModuleInstance *module_inst)
 #endif
 }
 
+#if WAMR_ENABLE_SYNCHRONIZE_STATE_ANALYSIS != 0 || WAMR_ENABLE_SYNCHRONIZE_EVERY_INSTRUCTION != 0
 bool 
 wasm_runtime_set_synchronization_callback(wasm_exec_env_t exec_env, wasm_synchronization_callback_t callback, void *worker_data){
     
@@ -8195,3 +8196,4 @@ wasm_runtime_clear_synchronization_callback(wasm_exec_env_t exec_env){
     exec_env->synchronization_callback = NULL;
     exec_env->synchronization_user_data = NULL;
 }
+#endif

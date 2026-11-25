@@ -1601,6 +1601,12 @@ wasm_interp_synchronization_signal_callback(wasm_exec_env_t exec_env){
     info.memory_start = exec_env->memory_start;
     info.memory_size = exec_env->memory_size;
 
+    info.globals_start = exec_env->globals_start;
+    info.globals_size = exec_env->globals_size;
+
+    info.table_start = exec_env->table_start;
+    info.table_bytes = exec_env->table_bytes;
+
 
     if (wasm_synchronization_extract_information(exec_env, exec_env->cur_frame, exec_env->last_instruction, &info)){      
         /* handle special case for first instruction, pointer starts at WASM_OP_IMPDEP, different for every thread */
@@ -1786,6 +1792,13 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
     
     /* memory->memory_data_size is the allocated byte size, which WAMR rounds to the platform page size */
     exec_env->memory_size = (uint64_t) memory->num_bytes_per_page * memory->cur_page_count; 
+
+    exec_env->globals_start = module->global_data;
+    exec_env->globals_size = module->global_data_size;
+
+    exec_env->table_start = (uint8_t *) wasm_get_table_inst(module, 0)->elems;
+    exec_env->table_bytes = wasm_get_table_inst(module, 0)->cur_size * sizeof(table_elem_type_t);
+
 #endif
 
 

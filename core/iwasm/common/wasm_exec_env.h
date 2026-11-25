@@ -186,7 +186,10 @@ typedef struct WASMExecEnv {
     bool execute_native;
     uint16_t ret_num_native;
     uint32_t argv_ret_native[2];
-
+    uint8_t *globals_start;
+    uint32_t globals_size;
+    uint8_t *table_start;
+    size_t table_bytes;
 #endif
 
 
